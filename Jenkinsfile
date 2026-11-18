@@ -1,7 +1,7 @@
 pipeline {
   agent any
 
-  // Déclenchement automatique à chaque push (webhook GitHub)
+  // Déclenchement automatique à chaque push (webhook GitHub via ngrok)
   triggers { githubPush() }
 
   options {
@@ -23,9 +23,11 @@ pipeline {
     stage('Checkout') {
       steps { checkout scm }
     }
+
     stage('Build') {
       steps { sh 'chmod +x mvnw && ./mvnw -B clean compile' }
     }
+
     stage('Tests') {
       // JaCoCo génère aussi le rapport de couverture (target/site/jacoco)
       steps { sh './mvnw -B test' }
@@ -33,6 +35,7 @@ pipeline {
         always { junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml' }
       }
     }
+
     stage('SonarQube Analysis') {
       steps {
         // Injecte l'URL et le token du serveur "SonarQube" configuré dans Jenkins
@@ -47,10 +50,29 @@ pipeline {
         }
       }
     }
+
     stage('Package') {
       steps { sh './mvnw -B package -DskipTests' }
       post {
         success { archiveArtifacts artifacts: 'target/*.jar', fingerprint: true }
+      }
+    }
+
+    stage('Publish to Nexus') {
+      steps {
+        // Identifiants lus depuis Jenkins : aucun secret n'est stocké dans le dépôt
+        withCredentials([usernamePassword(credentialsId: 'nexus-credentials',
+                                          usernameVariable: 'NEXUS_USER',
+                                          passwordVariable: 'NEXUS_PASS')]) {
+          // Guillemets simples : les secrets ne sont pas interpolés par Groovy
+          sh '''
+            # Version unique par build (ex. 1.0.12) : Nexus refuse d'écraser une release
+            ./mvnw -B org.codehaus.mojo:versions-maven-plugin:2.16.2:set \
+              -DnewVersion=1.0.${BUILD_NUMBER} -DgenerateBackupPoms=false
+            # Publication dans maven-releases (dépôts déclarés dans le pom.xml)
+            ./mvnw -B deploy -DskipTests -s settings-ci.xml
+          '''
+        }
       }
     }
   }
